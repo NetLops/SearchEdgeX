@@ -135,6 +135,30 @@ export default {
 	  return bingUrl;
 	}
   }
+
+  function decodeBraveRedirectUrl(braveUrl) {
+	// Brave 使用重定向 URL 格式: https://search.brave.com/redirect?url=...
+	try {
+	  const url = new URL(braveUrl);
+
+	  // 检查是否是 Brave 重定向链接
+	  if (!url.hostname.includes('brave.com')) {
+		return braveUrl;
+	  }
+
+	  // 提取 url 参数(目标 URL)
+	  const urlParam = url.searchParams.get('url');
+	  if (urlParam) {
+		return decodeURIComponent(urlParam);
+	  }
+
+	  // 如果没有 url 参数,返回原 URL
+	  return braveUrl;
+	} catch (error) {
+	  // 如果解析失败,返回原 URL
+	  return braveUrl;
+	}
+  }
   
   function extractResultsLite(html, limit) {
 	const results = [];
@@ -221,6 +245,36 @@ export default {
 	return results;
   }
 
+  function extractBraveResults(html, limit) {
+	const results = [];
+	const linkRegex1 = /<div[^>]*class="[^"]*snippet[^"]*"[^>]*>.*?<a[^>]*href="([^"]+)"[^>]*>.*?<span[^>]*class="[^"]*snippet-title[^"]*"[^>]*>(.*?)<\/span>/gis;
+	const linkRegex2 = /<div[^>]*class="[^"]*snippet[^"]*"[^>]*>.*?<a[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>/gis;
+	const linkRegex3 = /<div[^>]*class="[^"]*result[^"]*"[^>]*>.*?<a[^>]*href="([^"]+)"[^>]*>.*?<h[0-9][^>]*>(.*?)<\/h[0-9]>/gis;
+	const linkRegex4 = /<a[^>]*class="[^"]*result-header[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>/gis;
+	const linkRegex5 = /<div[^>]*class="[^"]*fdb[^"]*"[^>]*>.*?<a[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>/gis;
+	const regexPatterns = [linkRegex1, linkRegex2, linkRegex3, linkRegex4, linkRegex5];
+	for (const regex of regexPatterns) {
+	  let match;
+	  while ((match = regex.exec(html)) !== null && results.length < limit) {
+		const url = match[1];
+		const title = match[2].replace(/<[^>]+>/g, "").trim();
+		if (url && title && url.startsWith('http')) {
+		  try {
+			const realUrl = decodeBraveRedirectUrl(url);
+			if (!realUrl.includes('brave.com/search') && !realUrl.includes('search.brave.com')) {
+			  const decodedUrl = decodeURIComponent(realUrl);
+			  if (!results.find(r => r.url === decodedUrl)) {
+				results.push({ title, url: decodedUrl });
+			  }
+			}
+		  } catch (e) {}
+		}
+	  }
+	  if (results.length >= limit) break;
+	}
+	return results;
+  }
+
   async function searchWithDuckDuckGo(q, maxResults) {
 	const url = `https://duckduckgo.com/html/?q=${encodeURIComponent(q)}`;
 	const response = await fetch(url, {
@@ -285,11 +339,38 @@ export default {
 	return { q: q, results: results };
   }
 
+  async function searchWithBrave(q, maxResults) {
+	const url = `https://search.brave.com/search?q=${encodeURIComponent(q)}&reload_with_fallback_captcha=a9d7ecc048fd3388d79fb58caccfcc3f`;
+	const response = await fetch(url, {
+	  headers: {
+		"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+		"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+		"Accept-Language": "en-US,en;q=0.9",
+		"Accept-Encoding": "gzip, deflate, br",
+		"DNT": "1",
+		"Connection": "keep-alive",
+		"Upgrade-Insecure-Requests": "1",
+		"Sec-Fetch-Dest": "document",
+		"Sec-Fetch-Mode": "navigate",
+		"Sec-Fetch-Site": "none",
+		"Sec-Fetch-User": "?1",
+		"Cache-Control": "max-age=0",
+	  },
+	  redirect: "follow",
+	});
+	if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
+	const html = await response.text();
+	const htmlSlice = html.slice(0, 200000);
+	const results = extractBraveResults(htmlSlice, maxResults);
+	return { q: q, results: results };
+  }
+
   function getSearchEngine(engineName) {
 	const engines = {
 	  duckduckgo: searchWithDuckDuckGo,
 	  google: searchWithGoogle,
-	  bing: searchWithBing
+	  bing: searchWithBing,
+	  brave: searchWithBrave
 	};
 	return engines[engineName] || engines.duckduckgo;
   }
