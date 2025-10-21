@@ -81,24 +81,58 @@ export default {
 	// DuckDuckGo 使用重定向 URL 格式: //duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com
 	try {
 	  const url = new URL(ddgUrl.startsWith('//') ? 'https:' + ddgUrl : ddgUrl);
-	  
+
 	  // 提取 uddg 参数(实际目标 URL)
 	  const uddg = url.searchParams.get('uddg');
 	  if (uddg) {
 		return decodeURIComponent(uddg);
 	  }
-	  
+
 	  // 如果没有 uddg,尝试 kl 参数或其他可能的参数
 	  const kl = url.searchParams.get('kl');
 	  if (kl) {
 		return decodeURIComponent(kl);
 	  }
-	  
+
 	  // 如果都没有,返回原 URL
 	  return ddgUrl;
 	} catch (error) {
 	  // 如果解析失败,返回原 URL
 	  return ddgUrl;
+	}
+  }
+
+  function decodeBingRedirectUrl(bingUrl) {
+	// Bing 使用重定向 URL 格式: https://www.bing.com/ck/a?!&&p=...&u=a1aHR0cHM6Ly93d3cuZXhhbXBsZS5jb20v...
+	try {
+	  const url = new URL(bingUrl);
+
+	  // 检查是否是 Bing 重定向链接
+	  if (!url.hostname.includes('bing.com')) {
+		return bingUrl;
+	  }
+
+	  // 提取 u 参数(Base64 编码的目标 URL)
+	  const uParam = url.searchParams.get('u');
+	  if (uParam) {
+		try {
+		  // Bing 使用 Base64 编码,前缀为 a1 (表示 http://) 或 a1aHR0cHM (表示 https://)
+		  // 移除 a1 前缀并解码
+		  const base64Str = uParam.startsWith('a1') ? uParam.substring(2) : uParam;
+		  const decoded = atob(base64Str);
+		  if (decoded.startsWith('http')) {
+			return decoded;
+		  }
+		} catch (e) {
+		  // Base64 解码失败,继续尝试其他方法
+		}
+	  }
+
+	  // 如果没有 u 参数,返回原 URL
+	  return bingUrl;
+	} catch (error) {
+	  // 如果解析失败,返回原 URL
+	  return bingUrl;
 	}
   }
   
@@ -168,11 +202,16 @@ export default {
 	  while ((match = regex.exec(html)) !== null && results.length < limit) {
 		const url = match[1];
 		const title = match[2].replace(/<[^>]+>/g, "").trim();
-		if (url && title && url.startsWith('http') && !url.includes('bing.com/search') && !url.includes('microsoft.com/')) {
+		if (url && title && url.startsWith('http')) {
 		  try {
-			const decodedUrl = decodeURIComponent(url);
-			if (!results.find(r => r.url === decodedUrl)) {
-			  results.push({ title, url: decodedUrl });
+			// 解码 Bing 的重定向 URL,获取真实目标 URL
+			const realUrl = decodeBingRedirectUrl(url);
+			// 过滤掉 Bing 自己的链接
+			if (!realUrl.includes('bing.com/search') && !realUrl.includes('microsoft.com/')) {
+			  const decodedUrl = decodeURIComponent(realUrl);
+			  if (!results.find(r => r.url === decodedUrl)) {
+				results.push({ title, url: decodedUrl });
+			  }
 			}
 		  } catch (e) {}
 		}
