@@ -11,6 +11,21 @@ interface Context {
   waitUntil: (promise: Promise<any>) => void;
 }
 
+// 搜索结果接口
+interface SearchResult {
+  title: string;
+  url: string;
+}
+
+// 搜索响应接口
+interface SearchResponse {
+  q: string;
+  results: SearchResult[];
+}
+
+// 搜索引擎函数类型
+type SearchEngineFunction = (q: string, maxResults: number) => Promise<SearchResponse>;
+
 // CORS 响应头
 function corsHeaders(): HeadersInit {
   return {
@@ -67,8 +82,8 @@ function decodeRedirectUrl(ddgUrl: string): string {
 }
 
 // 从 HTML 提取搜索结果
-function extractResultsLite(html: string, limit: number) {
-  const results: Array<{ title: string; url: string }> = [];
+function extractResultsLite(html: string, limit: number): SearchResult[] {
+  const results: SearchResult[] = [];
   const linkRegex =
     /<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>/gis;
 
@@ -87,6 +102,85 @@ function extractResultsLite(html: string, limit: number) {
   }
 
   return results;
+}
+
+function extractGoogleResults(html: string, limit: number): SearchResult[] {
+  const results: SearchResult[] = [];
+  const linkRegex1 = /<a[^>]*href="\/url\?q=([^"&]+)[^"]*"[^>]*><h3[^>]*>(.*?)<\/h3>/gis;
+  const linkRegex2 = /<a[^>]*href="(https?:\/\/[^"]+)"[^>]*><h3[^>]*>(.*?)<\/h3>/gis;
+  const linkRegex3 = /<a[^>]*jsname="[^"]*"[^>]*href="\/url\?q=([^"&]+)[^"]*"[^>]*>[^<]*<h3[^>]*>(.*?)<\/h3>/gis;
+  const linkRegex4 = /<div class="[^"]*yuRUbf[^"]*"[^>]*>.*?<a href="([^"]+)"[^>]*>.*?<h3[^>]*>(.*?)<\/h3>/gis;
+  const linkRegex5 = /<a[^>]*href="([^"]+)"[^>]*data-ved="[^"]*"[^>]*><br><div[^>]*><div[^>]*><div[^>]*><h3[^>]*>(.*?)<\/h3>/gis;
+  const regexPatterns = [linkRegex4, linkRegex1, linkRegex2, linkRegex3, linkRegex5];
+  for (const regex of regexPatterns) {
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(html)) !== null && results.length < limit) {
+      let url = match[1];
+      const title = match[2].replace(/<[^>]+>/g, "").trim();
+      if (url && title) {
+        if (url.startsWith('/url?q=')) {
+          const urlMatch = url.match(/\/url\?q=([^&]+)/);
+          if (urlMatch) url = decodeURIComponent(urlMatch[1]);
+        }
+        if (url.startsWith('http') && !url.includes('google.com/search') && !url.includes('webcache.googleusercontent.com')) {
+          try {
+            const decodedUrl = decodeURIComponent(url);
+            if (!results.find(r => r.url === decodedUrl)) {
+              results.push({ title, url: decodedUrl });
+            }
+          } catch (e) {}
+        }
+      }
+    }
+    if (results.length >= limit) break;
+  }
+  return results;
+}
+
+async function searchWithDuckDuckGo(q: string, maxResults: number): Promise<SearchResponse> {
+  const searchUrl = `https://duckduckgo.com/html/?q=${encodeURIComponent(q)}`;
+  const response = await fetch(searchUrl, {
+    headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+  });
+  if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
+  const html = await response.text();
+  const htmlSlice = html.slice(0, 150000);
+  const results = extractResultsLite(htmlSlice, maxResults);
+  return { q: q, results: results };
+}
+
+async function searchWithGoogle(q: string, maxResults: number): Promise<SearchResponse> {
+  const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(q)}&num=${maxResults}&hl=en`;
+  const response = await fetch(searchUrl, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+      "Accept-Language": "en-US,en;q=0.9",
+      "Accept-Encoding": "gzip, deflate, br",
+      "DNT": "1",
+      "Connection": "keep-alive",
+      "Upgrade-Insecure-Requests": "1",
+      "Sec-Fetch-Dest": "document",
+      "Sec-Fetch-Mode": "navigate",
+      "Sec-Fetch-Site": "none",
+      "Sec-Fetch-User": "?1",
+      "Cache-Control": "max-age=0",
+    },
+    redirect: "follow",
+  });
+  if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
+  const html = await response.text();
+  const htmlSlice = html.slice(0, 200000);
+  const results = extractGoogleResults(htmlSlice, maxResults);
+  return { q: q, results: results };
+}
+
+function getSearchEngine(engineName: string): SearchEngineFunction {
+  const engines: Record<string, SearchEngineFunction> = {
+    duckduckgo: searchWithDuckDuckGo,
+    google: searchWithGoogle,
+  };
+  return engines[engineName] || engines.duckduckgo;
 }
 
 // 获取 vqd token
@@ -123,27 +217,16 @@ async function getVqd(query: string): Promise<string | null> {
 // 网页搜索
 async function handleWebSearch(url: URL) {
   const { q, maxResults } = getParams(url);
-  const searchUrl = `https://duckduckgo.com/html/?q=${encodeURIComponent(q)}`;
+  const engine = (url.searchParams.get("engine") || "duckduckgo").toLowerCase().trim();
 
-  const response = await fetch(searchUrl, {
-    headers: {
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    },
-  });
+  const searchEngine = getSearchEngine(engine);
 
-  if (!response.ok) {
-    return jsonResponse({ error: `HTTP error: ${response.status}` }, 502);
+  try {
+    const result = await searchEngine(q, maxResults);
+    return jsonResponse(result);
+  } catch (error: any) {
+    return jsonResponse({ error: error.message, q: q }, 502);
   }
-
-  const html = await response.text();
-  const htmlSlice = html.slice(0, 150000);
-  const results = extractResultsLite(htmlSlice, maxResults);
-
-  return jsonResponse({
-    q: q,
-    results: results,
-  });
 }
 
 // 即时答案搜索
@@ -364,7 +447,7 @@ export async function onRequestGet(context: Context): Promise<Response> {
 }
 
 // 处理 OPTIONS 请求 (CORS 预检)
-export function onRequestOptions(context: Context): Response {
+export function onRequestOptions(_context: Context): Response {
   return new Response("", {
     status: 204,
     headers: corsHeaders(),

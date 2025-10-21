@@ -106,49 +106,170 @@ export default {
 	const results = [];
 	// 匹配 DuckDuckGo HTML 结果
 	const linkRegex = /<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>/gis;
-	
+
 	let match;
 	while ((match = linkRegex.exec(html)) !== null && results.length < limit) {
 	  const href = match[1];
 	  // 移除 HTML 标签,保留纯文本
 	  const title = match[2].replace(/<[^>]+>/g, "").trim();
-	  
+
 	  if (href && title) {
 		// 解码 DuckDuckGo 的重定向 URL,获取真实目标 URL
 		const realUrl = decodeRedirectUrl(href);
 		results.push({ title, url: realUrl });
 	  }
 	}
-	
+
 	return results;
   }
-  
-  async function handleSearch(params) {
-	const { q, maxResults } = getParams(params);
+
+  function extractGoogleResults(html, limit) {
+	const results = [];
+	const linkRegex1 = /<a[^>]*href="\/url\?q=([^"&]+)[^"]*"[^>]*><h3[^>]*>(.*?)<\/h3>/gis;
+	const linkRegex2 = /<a[^>]*href="(https?:\/\/[^"]+)"[^>]*><h3[^>]*>(.*?)<\/h3>/gis;
+	const linkRegex3 = /<a[^>]*jsname="[^"]*"[^>]*href="\/url\?q=([^"&]+)[^"]*"[^>]*>[^<]*<h3[^>]*>(.*?)<\/h3>/gis;
+	const linkRegex4 = /<div class="[^"]*yuRUbf[^"]*"[^>]*>.*?<a href="([^"]+)"[^>]*>.*?<h3[^>]*>(.*?)<\/h3>/gis;
+	const linkRegex5 = /<a[^>]*href="([^"]+)"[^>]*data-ved="[^"]*"[^>]*><br><div[^>]*><div[^>]*><div[^>]*><h3[^>]*>(.*?)<\/h3>/gis;
+	const regexPatterns = [linkRegex4, linkRegex1, linkRegex2, linkRegex3, linkRegex5];
+	for (const regex of regexPatterns) {
+	  let match;
+	  while ((match = regex.exec(html)) !== null && results.length < limit) {
+		let url = match[1];
+		const title = match[2].replace(/<[^>]+>/g, "").trim();
+		if (url && title) {
+		  if (url.startsWith('/url?q=')) {
+			const urlMatch = url.match(/\/url\?q=([^&]+)/);
+			if (urlMatch) url = decodeURIComponent(urlMatch[1]);
+		  }
+		  if (url.startsWith('http') && !url.includes('google.com/search') && !url.includes('webcache.googleusercontent.com')) {
+			try {
+			  const decodedUrl = decodeURIComponent(url);
+			  if (!results.find(r => r.url === decodedUrl)) {
+				results.push({ title, url: decodedUrl });
+			  }
+			} catch (e) {}
+		  }
+		}
+	  }
+	  if (results.length >= limit) break;
+	}
+	return results;
+  }
+
+  function extractBingResults(html, limit) {
+	const results = [];
+	const linkRegex1 = /<li class="[^"]*b_algo[^"]*"[^>]*>.*?<h2[^>]*>.*?<a href="([^"]+)"[^>]*>(.*?)<\/a>/gis;
+	const linkRegex2 = /<h2[^>]*>.*?<a[^>]*href="([^"]+)"[^>]*>(.*?)<\/a>.*?<\/h2>/gis;
+	const linkRegex3 = /<div[^>]*class="[^"]*b_title[^"]*"[^>]*>.*?<h2[^>]*>.*?<a href="([^"]+)"[^>]*>(.*?)<\/a>/gis;
+	const linkRegex4 = /<a[^>]*href="([^"]+)"[^>]*><h2[^>]*>(.*?)<\/h2><\/a>/gis;
+	const regexPatterns = [linkRegex1, linkRegex2, linkRegex3, linkRegex4];
+	for (const regex of regexPatterns) {
+	  let match;
+	  while ((match = regex.exec(html)) !== null && results.length < limit) {
+		const url = match[1];
+		const title = match[2].replace(/<[^>]+>/g, "").trim();
+		if (url && title && url.startsWith('http') && !url.includes('bing.com/search') && !url.includes('microsoft.com/')) {
+		  try {
+			const decodedUrl = decodeURIComponent(url);
+			if (!results.find(r => r.url === decodedUrl)) {
+			  results.push({ title, url: decodedUrl });
+			}
+		  } catch (e) {}
+		}
+	  }
+	  if (results.length >= limit) break;
+	}
+	return results;
+  }
+
+  async function searchWithDuckDuckGo(q, maxResults) {
 	const url = `https://duckduckgo.com/html/?q=${encodeURIComponent(q)}`;
-	
+	const response = await fetch(url, {
+	  headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+	});
+	if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
+	const html = await response.text();
+	const htmlSlice = html.slice(0, 150000);
+	const results = extractResultsLite(htmlSlice, maxResults);
+	return { q: q, results: results };
+  }
+
+  async function searchWithGoogle(q, maxResults) {
+	const url = `https://www.google.com/search?q=${encodeURIComponent(q)}&num=${maxResults}&hl=en`;
 	const response = await fetch(url, {
 	  headers: {
-		"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+		"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+		"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+		"Accept-Language": "en-US,en;q=0.9",
+		"Accept-Encoding": "gzip, deflate, br",
+		"DNT": "1",
+		"Connection": "keep-alive",
+		"Upgrade-Insecure-Requests": "1",
+		"Sec-Fetch-Dest": "document",
+		"Sec-Fetch-Mode": "navigate",
+		"Sec-Fetch-Site": "none",
+		"Sec-Fetch-User": "?1",
+		"Cache-Control": "max-age=0",
 	  },
+	  redirect: "follow",
 	});
-	
-	if (!response.ok) {
+	if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
+	const html = await response.text();
+	const htmlSlice = html.slice(0, 200000);
+	const results = extractGoogleResults(htmlSlice, maxResults);
+	return { q: q, results: results };
+  }
+
+  async function searchWithBing(q, maxResults) {
+	const url = `https://www.bing.com/search?q=${encodeURIComponent(q)}&count=${maxResults}`;
+	const response = await fetch(url, {
+	  headers: {
+		"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
+		"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+		"Accept-Language": "en-US,en;q=0.9",
+		"Accept-Encoding": "gzip, deflate, br",
+		"DNT": "1",
+		"Connection": "keep-alive",
+		"Upgrade-Insecure-Requests": "1",
+		"Sec-Fetch-Dest": "document",
+		"Sec-Fetch-Mode": "navigate",
+		"Sec-Fetch-Site": "none",
+		"Sec-Fetch-User": "?1",
+		"Cache-Control": "max-age=0",
+	  },
+	  redirect: "follow",
+	});
+	if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
+	const html = await response.text();
+	const htmlSlice = html.slice(0, 200000);
+	const results = extractBingResults(htmlSlice, maxResults);
+	return { q: q, results: results };
+  }
+
+  function getSearchEngine(engineName) {
+	const engines = {
+	  duckduckgo: searchWithDuckDuckGo,
+	  google: searchWithGoogle,
+	  bing: searchWithBing
+	};
+	return engines[engineName] || engines.duckduckgo;
+  }
+
+  async function handleSearch(params) {
+	const { q, maxResults } = getParams(params);
+	const engine = (params.get("engine") || "duckduckgo").toLowerCase().trim();
+
+	const searchEngine = getSearchEngine(engine);
+
+	try {
+	  const result = await searchEngine(q, maxResults);
+	  return jsonResponse(result);
+	} catch (error) {
 	  return jsonResponse(
-		{ error: `HTTP error: ${response.status}` },
+		{ error: error.message, q: q },
 		502
 	  );
 	}
-	
-	const html = await response.text();
-	// 只处理前 150KB
-	const htmlSlice = html.slice(0, 150000);
-	const results = extractResultsLite(htmlSlice, maxResults);
-	
-	return jsonResponse({
-	  q: q,
-	  results: results,
-	});
   }
   
   async function handleSearchAnswers(params) {
